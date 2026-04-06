@@ -1,65 +1,148 @@
-import Image from "next/image";
+import { MaterialSymbol } from "@/app/_components/material-symbol";
+import { AdminLoginForm } from "@/app/_components/admin-login-form";
 
-export default function Home() {
+type FloatingIconProps = {
+  name:
+    | "auto_stories"
+    | "palette"
+    | "rocket_launch"
+    | "school"
+    | "star";
+  className: string;
+  sizeClass: string;
+  filled?: boolean;
+};
+
+function FloatingIcon({
+  name,
+  className,
+  sizeClass,
+  filled = false,
+}: FloatingIconProps) {
+  const resolvedName: React.ComponentProps<typeof MaterialSymbol>["name"] =
+    name === "auto_stories"
+      ? "school"
+      : name === "palette"
+        ? "extension"
+        : name;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <div className={`pointer-events-none absolute -z-10 text-primary ${className}`}>
+      <MaterialSymbol name={resolvedName} filled={filled} className={sizeClass} />
+    </div>
+  );
+}
+
+export default function HomePage() {
+  return (
+    <main className="bg-pattern relative flex min-h-screen items-center justify-center overflow-hidden bg-surface p-6 font-body text-on-surface">
+      <FloatingIcon
+        name="school"
+        className="top-10 left-10 scale-150 opacity-15"
+        sizeClass="size-[120px]"
+      />
+      <FloatingIcon
+        name="star"
+        filled
+        className="bottom-20 left-20 scale-125 opacity-15"
+        sizeClass="size-[100px]"
+      />
+      <FloatingIcon
+        name="palette"
+        className="top-1/4 right-20 scale-110 opacity-15"
+        sizeClass="size-[90px]"
+      />
+      <FloatingIcon
+        name="rocket_launch"
+        filled
+        className="right-10 bottom-1/4 scale-150 opacity-15"
+        sizeClass="size-[110px]"
+      />
+      <FloatingIcon
+        name="auto_stories"
+        className="top-10 right-1/3 opacity-10"
+        sizeClass="size-[80px]"
+      />
+
+      <div className="relative w-full max-w-[480px]">
+        <div className="mb-10 flex flex-col items-center">
+          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-lg bg-primary-container shadow-lg">
+            <MaterialSymbol
+              name="toys"
+              filled
+              className="size-10 text-on-primary-container"
+            />
+          </div>
+          <h1 className="font-headline text-3xl font-extrabold tracking-tight text-primary">
+            Alpha Nova Kids
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="mt-1 font-label text-sm font-bold tracking-[0.3em] text-outline uppercase">
+            Admin Portal
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+        <section className="relative overflow-hidden rounded-lg bg-surface-container-lowest p-10 shadow-[0px_20px_40px_rgba(44,47,49,0.06)] md:p-12">
+          <div className="mb-8">
+            <h2 className="mb-2 font-headline text-2xl font-bold text-on-surface">
+              Welcome back, Admin!
+            </h2>
+            <p className="text-base text-on-surface-variant">
+              Please enter your credentials to manage the educational ecosystem.
+            </p>
+          </div>
+
+          <div className="hidden items-center gap-3 rounded-DEFAULT border border-error-container/20 bg-error-container/10 p-4">
+            <MaterialSymbol name="error" className="size-5 text-error" />
+            <p className="text-sm font-medium text-on-error-container">
+              Invalid Credentials. Please try again.
+            </p>
+          </div>
+
+          <AdminLoginForm />
+
+          <div className="mt-8 flex justify-center border-t-0 pt-8">
+            <p className="flex items-center gap-2 text-sm text-on-surface-variant">
+              <MaterialSymbol name="verified_user" className="size-4" />
+              Authorized Personnel Only
+            </p>
+          </div>
+        </section>
+
+        <div className="absolute top-24 -left-20 -z-10 hidden h-32 w-32 rounded-lg bg-tertiary-container opacity-80 shadow-lg backdrop-blur-sm lg:block">
+          <div className="flex h-full items-center justify-center p-4">
+            <MaterialSymbol
+              name="extension"
+              filled
+              className="size-10 text-on-tertiary-container"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          </div>
         </div>
-      </main>
-    </div>
+
+        <div className="absolute -right-24 -bottom-12 -z-10 hidden h-48 w-48 rounded-lg bg-secondary-container opacity-80 shadow-xl backdrop-blur-sm lg:block">
+          <div className="flex h-full flex-col justify-end p-6">
+            <MaterialSymbol
+              name="emoji_events"
+              filled
+              className="mb-2 size-10 text-on-secondary-container"
+            />
+            <p className="font-headline font-bold leading-tight text-on-secondary-container">
+              Reward
+              <br />
+              Excellence
+            </p>
+          </div>
+        </div>
+
+        <footer className="mt-8 text-center">
+          <a
+            href="#"
+            className="flex items-center justify-center gap-1 text-xs font-medium text-on-surface-variant/60 transition-colors hover:text-primary"
+          >
+            <MaterialSymbol name="help" className="size-4" />
+            Need assistance? Contact support
+          </a>
+        </footer>
+      </div>
+    </main>
   );
 }
