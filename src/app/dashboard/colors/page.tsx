@@ -56,7 +56,7 @@ const colorCards: ColorCard[] = [
     contrastClassName: "text-white",
   },
   {
-    name: "Purple",
+    name: "Violet",
     family: "Creative",
     hexLabel: "#8B5CF6",
     swatchClassName: "bg-violet-500",
@@ -89,20 +89,6 @@ const colorCards: ColorCard[] = [
     hexLabel: "#F9FAFB",
     swatchClassName: "bg-slate-50",
     contrastClassName: "text-slate-900",
-  },
-  {
-    name: "Gray",
-    family: "Neutral",
-    hexLabel: "#9CA3AF",
-    swatchClassName: "bg-slate-400",
-    contrastClassName: "text-slate-900",
-  },
-  {
-    name: "Teal",
-    family: "Fresh",
-    hexLabel: "#14B8A6",
-    swatchClassName: "bg-teal-500",
-    contrastClassName: "text-white",
   },
 ];
 

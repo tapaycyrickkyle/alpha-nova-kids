@@ -17,11 +17,11 @@ type WeatherCard = {
 };
 
 const weatherCards: WeatherCard[] = [
-  { name: "Cloudy Day", label: "Cloudy Day" },
-  { name: "Rainy Day", label: "Rainy Day" },
-  { name: "Sunny Day", label: "Sunny Day" },
-  { name: "Windy Day", label: "Windy Day" },
-  { name: "Stormy Day", label: "Stormy Day" },
+  { name: "cloudy", label: "Cloudy" },
+  { name: "rainy", label: "Rainy" },
+  { name: "sunny", label: "Sunny" },
+  { name: "windy", label: "Windy" },
+  { name: "stormy", label: "Stormy" },
 ];
 
 export default function WeatherPage() {

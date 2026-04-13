@@ -6,9 +6,11 @@ import { MaterialSymbol } from "@/app/_components/material-symbol";
 import { PhonicsUploadGrid } from "@/app/dashboard/alphabet/phonics/_components/phonics-upload-grid";
 
 type PhonicsCard = {
-  letter: string;
+  id: string;
+  badge: string;
   label: string;
   pronunciation: string;
+  detailHref?: string;
 };
 
 type PhonicsManagerProps = {

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { MaterialSymbol } from "@/app/_components/material-symbol";
+import { BackgroundMusicManager } from "@/app/dashboard/_components/background-music-manager";
 import { DashboardShell } from "@/app/dashboard/_components/dashboard-shell";
 
 type CategoryCard = {
@@ -102,13 +103,16 @@ function CategoryCard({ card }: { card: CategoryCard }) {
       />
       <MaterialSymbol
         name={card.icon}
-        className="pointer-events-none absolute top-8 -right-2 size-[120px] select-none opacity-[0.03] transition-opacity duration-500 group-hover:opacity-[0.08]"
+        className="pointer-events-none absolute top-6 -right-3 size-[148px] select-none opacity-[0.03] transition-opacity duration-500 group-hover:opacity-[0.08]"
       />
 
       <div
         className={`flex h-20 w-20 items-center justify-center rounded-2xl shadow-sm transition-all duration-500 group-hover:scale-110 ${card.accentIconShellClassName}`}
       >
-        <MaterialSymbol name={card.icon} className={`size-12 ${card.accentIconClassName}`} />
+        <MaterialSymbol
+          name={card.icon}
+          className={`text-[3.25rem] ${card.accentIconClassName}`}
+        />
       </div>
 
       <div className="relative z-10">
@@ -166,6 +170,8 @@ export default function DashboardPage() {
             ))}
           </div>
         </section>
+
+        <BackgroundMusicManager />
       </div>
     </DashboardShell>
   );

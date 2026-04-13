@@ -12,38 +12,45 @@ export const metadata: Metadata = {
 };
 
 type PronunciationCard = {
-  letter: string;
+  id: string;
+  badge: string;
   word: string;
   clipLabel: string;
 };
 
 const pronunciationCards: PronunciationCard[] = [
-  { letter: "A", word: "Apple", clipLabel: "Letter A" },
-  { letter: "B", word: "Ball", clipLabel: "Letter B" },
-  { letter: "C", word: "Cat", clipLabel: "Letter C" },
-  { letter: "D", word: "Dog", clipLabel: "Letter D" },
-  { letter: "E", word: "Egg", clipLabel: "Letter E" },
-  { letter: "F", word: "Fish", clipLabel: "Letter F" },
-  { letter: "G", word: "Grapes", clipLabel: "Letter G" },
-  { letter: "H", word: "Hat", clipLabel: "Letter H" },
-  { letter: "I", word: "Igloo", clipLabel: "Letter I" },
-  { letter: "J", word: "Jam", clipLabel: "Letter J" },
-  { letter: "K", word: "Kite", clipLabel: "Letter K" },
-  { letter: "L", word: "Lion", clipLabel: "Letter L" },
-  { letter: "M", word: "Moon", clipLabel: "Letter M" },
-  { letter: "N", word: "Nest", clipLabel: "Letter N" },
-  { letter: "O", word: "Orange", clipLabel: "Letter O" },
-  { letter: "P", word: "Pig", clipLabel: "Letter P" },
-  { letter: "Q", word: "Queen", clipLabel: "Letter Q" },
-  { letter: "R", word: "Rabbit", clipLabel: "Letter R" },
-  { letter: "S", word: "Sun", clipLabel: "Letter S" },
-  { letter: "T", word: "Turtle", clipLabel: "Letter T" },
-  { letter: "U", word: "Umbrella", clipLabel: "Letter U" },
-  { letter: "V", word: "Van", clipLabel: "Letter V" },
-  { letter: "W", word: "Whale", clipLabel: "Letter W" },
-  { letter: "X", word: "Xylophone", clipLabel: "Letter X" },
-  { letter: "Y", word: "Yak", clipLabel: "Letter Y" },
-  { letter: "Z", word: "Zebra", clipLabel: "Letter Z" },
+  { id: "a", badge: "A", word: "Apple", clipLabel: "Letter A" },
+  { id: "b", badge: "B", word: "Ball", clipLabel: "Letter B" },
+  { id: "c", badge: "C", word: "Cat", clipLabel: "Letter C" },
+  { id: "d", badge: "D", word: "Dog", clipLabel: "Letter D" },
+  { id: "e", badge: "E", word: "Egg", clipLabel: "Letter E" },
+  { id: "f", badge: "F", word: "Fish", clipLabel: "Letter F" },
+  { id: "g", badge: "G", word: "Grapes", clipLabel: "Letter G" },
+  { id: "h", badge: "H", word: "Hat", clipLabel: "Letter H" },
+  { id: "i", badge: "I", word: "Igloo", clipLabel: "Letter I" },
+  { id: "j", badge: "J", word: "Jam", clipLabel: "Letter J" },
+  { id: "k", badge: "K", word: "Kite", clipLabel: "Letter K" },
+  { id: "l", badge: "L", word: "Lion", clipLabel: "Letter L" },
+  { id: "m", badge: "M", word: "Moon", clipLabel: "Letter M" },
+  { id: "n", badge: "N", word: "Nest", clipLabel: "Letter N" },
+  { id: "o", badge: "O", word: "Orange", clipLabel: "Letter O" },
+  { id: "p", badge: "P", word: "Pig", clipLabel: "Letter P" },
+  { id: "q", badge: "Q", word: "Queen", clipLabel: "Letter Q" },
+  { id: "r", badge: "R", word: "Rabbit", clipLabel: "Letter R" },
+  { id: "s", badge: "S", word: "Sun", clipLabel: "Letter S" },
+  { id: "t", badge: "T", word: "Turtle", clipLabel: "Letter T" },
+  { id: "u", badge: "U", word: "Umbrella", clipLabel: "Letter U" },
+  { id: "v", badge: "V", word: "Van", clipLabel: "Letter V" },
+  { id: "w", badge: "W", word: "Whale", clipLabel: "Letter W" },
+  { id: "x", badge: "X", word: "Xylophone", clipLabel: "Letter X" },
+  { id: "y", badge: "Y", word: "Yak", clipLabel: "Letter Y" },
+  { id: "z", badge: "Z", word: "Zebra", clipLabel: "Letter Z" },
+  {
+    id: "pronunciation-button",
+    badge: "PB",
+    word: "Pronunciation Button",
+    clipLabel: "Pronunciation Button",
+  },
 ];
 
 export default function PronunciationPage() {

@@ -65,14 +65,7 @@ export default function HomePage() {
       />
 
       <div className="relative w-full max-w-[480px]">
-        <div className="mb-10 flex flex-col items-center">
-          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-lg bg-primary-container shadow-lg">
-            <MaterialSymbol
-              name="toys"
-              filled
-              className="size-10 text-on-primary-container"
-            />
-          </div>
+        <div className="my-8 flex flex-col items-center">
           <h1 className="font-headline text-3xl font-extrabold tracking-tight text-primary">
             Alpha Nova Kids
           </h1>
@@ -132,16 +125,6 @@ export default function HomePage() {
             </p>
           </div>
         </div>
-
-        <footer className="mt-8 text-center">
-          <a
-            href="#"
-            className="flex items-center justify-center gap-1 text-xs font-medium text-on-surface-variant/60 transition-colors hover:text-primary"
-          >
-            <MaterialSymbol name="help" className="size-4" />
-            Need assistance? Contact support
-          </a>
-        </footer>
       </div>
     </main>
   );

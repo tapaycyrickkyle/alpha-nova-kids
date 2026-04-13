@@ -1,10 +1,16 @@
 import type { Metadata } from "next";
+import { config } from "@fortawesome/fontawesome-svg-core";
+import "@fortawesome/fontawesome-svg-core/styles.css";
 import {
   Be_Vietnam_Pro,
   Geist_Mono,
   Plus_Jakarta_Sans,
 } from "next/font/google";
+
+import { BackgroundMusicPlayer } from "@/app/_components/background-music-player";
 import "./globals.css";
+
+config.autoAddCss = false;
 
 const headlineFont = Plus_Jakarta_Sans({
   variable: "--font-plus-jakarta",
@@ -28,6 +34,10 @@ const bodyFont = Be_Vietnam_Pro({
 export const metadata: Metadata = {
   title: "Admin Login | Curated Playground",
   description: "Admin portal login for Curated Playground.",
+  icons: {
+    icon: "/icon.png",
+    apple: "/icon.png",
+  },
 };
 
 export default function RootLayout({
@@ -40,7 +50,10 @@ export default function RootLayout({
       lang="en"
       className={`${headlineFont.variable} ${bodyFont.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <BackgroundMusicPlayer />
+        {children}
+      </body>
     </html>
   );
 }

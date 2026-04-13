@@ -6,7 +6,8 @@ import { MaterialSymbol } from "@/app/_components/material-symbol";
 import { PronunciationUploadGrid } from "@/app/dashboard/alphabet/pronunciation/_components/pronunciation-upload-grid";
 
 type PronunciationCard = {
-  letter: string;
+  id: string;
+  badge: string;
   word: string;
   clipLabel: string;
 };

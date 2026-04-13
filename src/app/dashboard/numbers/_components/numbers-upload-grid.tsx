@@ -4,16 +4,37 @@ import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { MaterialSymbol } from "@/app/_components/material-symbol";
+import { createThumbnailImageForUpload } from "@/lib/browser-image-normalization";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import {
+  fetchAudioAssetMetadataMap,
+  upsertAudioAssetMetadata,
+} from "@/lib/supabase/audio-asset-metadata";
+import {
+  fetchImageAssetMetadataMap,
+  upsertImageAssetMetadata,
+} from "@/lib/supabase/image-asset-metadata";
 
 const SUPABASE_BUCKET = "card-image";
 const SUPABASE_IMAGE_FOLDER = "uploads/images/numbers-cards";
+const SUPABASE_AUDIO_FOLDER = "uploads/audio/numbers";
 const MAX_IMAGE_FILE_SIZE = 5 * 1024 * 1024;
+const MAX_AUDIO_FILE_SIZE = 12 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = [
   "image/png",
   "image/jpeg",
   "image/jpg",
   "image/webp",
+] as const;
+const ALLOWED_AUDIO_TYPES = [
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/aac",
 ] as const;
 
 type NumberCard = {
@@ -36,9 +57,12 @@ type CardImageState = {
   status: CardUploadStatus;
 };
 
-type AudioUploadState = {
-  fileName: string;
-  previewUrl: string;
+type CardAudioState = {
+  file: File | null;
+  fileName: string | null;
+  filePath: string | null;
+  previewUrl: string | null;
+  status: CardUploadStatus;
 };
 
 type NumbersUploadGridProps = {
@@ -54,19 +78,19 @@ function sanitizeSegment(value: string) {
 
 function buildImageFilePath(basePath: string, cardName: string, fileName: string) {
   const fileExtension = fileName.split(".").pop()?.toLowerCase() ?? "bin";
-  return `${basePath}/${sanitizeSegment(cardName)}/card-image.${fileExtension}`;
+  return `${basePath}/${sanitizeSegment(cardName)}/card-image-${Date.now()}.${fileExtension}`;
 }
 
-async function getAuthenticatedStorageBasePath() {
-  const supabase = getSupabaseBrowserClient();
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
+function buildThumbnailFilePath(filePath: string) {
+  return filePath.replace(/\.[^.]+$/, "-thumbnail.webp");
+}
 
-  if (error) throw error;
-  if (!user) throw new Error("You need to be signed in before uploading files.");
+function buildAudioFilePath(basePath: string, cardName: string, fileName: string) {
+  const fileExtension = fileName.split(".").pop()?.toLowerCase() ?? "bin";
+  return `${basePath}/${sanitizeSegment(cardName)}/card-audio-${Date.now()}.${fileExtension}`;
+}
 
+function getStorageBasePath() {
   return SUPABASE_IMAGE_FOLDER;
 }
 
@@ -76,6 +100,21 @@ function validateImageFile(file: File) {
   }
   if (file.size > MAX_IMAGE_FILE_SIZE) {
     return "Image size must be 5MB or smaller.";
+  }
+  return null;
+}
+
+function validateAudioFile(file: File) {
+  const hasAllowedMimeType = ALLOWED_AUDIO_TYPES.includes(
+    file.type as (typeof ALLOWED_AUDIO_TYPES)[number],
+  );
+  const hasAllowedExtension = /\.(mp3|wav|ogg|m4a|aac)$/i.test(file.name);
+
+  if (!hasAllowedMimeType && !hasAllowedExtension) {
+    return "Please upload an MP3, WAV, OGG, M4A, or AAC audio file.";
+  }
+  if (file.size > MAX_AUDIO_FILE_SIZE) {
+    return "Audio size must be 12MB or smaller.";
   }
   return null;
 }
@@ -90,14 +129,23 @@ function createEmptyImageState(): CardImageState {
   };
 }
 
-async function createSignedPreviewUrl(filePath: string) {
-  const supabase = getSupabaseBrowserClient();
-  const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).createSignedUrl(filePath, 3600);
-  if (error) throw error;
-  return data.signedUrl;
+function createEmptyAudioState(): CardAudioState {
+  return {
+    file: null,
+    fileName: null,
+    filePath: null,
+    previewUrl: null,
+    status: { state: "idle", message: null },
+  };
 }
 
-async function findExistingImagePath(folderPath: string) {
+function createPreviewUrl(filePath: string) {
+  const supabase = getSupabaseBrowserClient();
+  const { data } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath);
+  return data.publicUrl;
+}
+
+async function findExistingFilePath(folderPath: string) {
   const supabase = getSupabaseBrowserClient();
   const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).list(folderPath, { limit: 100 });
   if (error) throw error;
@@ -106,17 +154,17 @@ async function findExistingImagePath(folderPath: string) {
   return firstFile ? `${folderPath}/${firstFile.name}` : null;
 }
 
-async function uploadImageToSupabase(file: File, filePath: string) {
+async function uploadFileToSupabase(file: File, filePath: string, fallbackType: string) {
   const supabase = getSupabaseBrowserClient();
   const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(filePath, file, {
     cacheControl: "3600",
     upsert: true,
-    contentType: file.type,
+    contentType: file.type || fallbackType,
   });
   if (error) throw error;
 }
 
-async function removeImageFromSupabase(folderPath: string) {
+async function removeFolderFilesFromSupabase(folderPath: string) {
   const supabase = getSupabaseBrowserClient();
   const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).list(folderPath, { limit: 100 });
   if (error) throw error;
@@ -131,21 +179,18 @@ async function removeImageFromSupabase(folderPath: string) {
 function NumberCardItem({
   card,
   imageState,
+  audioState,
   onImageSelected,
+  onAudioSelected,
 }: {
   card: NumberCard;
   imageState: CardImageState;
+  audioState: CardAudioState;
   onImageSelected: (cardName: string, file: File) => void;
+  onAudioSelected: (cardName: string, file: File) => void;
 }) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const audioInputRef = useRef<HTMLInputElement | null>(null);
-  const [audioUpload, setAudioUpload] = useState<AudioUploadState | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (audioUpload?.previewUrl) URL.revokeObjectURL(audioUpload.previewUrl);
-    };
-  }, [audioUpload]);
 
   function handleImageChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -157,15 +202,12 @@ function NumberCardItem({
   function handleAudioChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-
-    setAudioUpload((current) => {
-      if (current?.previewUrl) URL.revokeObjectURL(current.previewUrl);
-      return { fileName: file.name, previewUrl: URL.createObjectURL(file) };
-    });
+    onAudioSelected(card.number, file);
+    event.target.value = "";
   }
 
   const imageButtonLabel = imageState.previewUrl ? "Replace image" : "Upload image";
-  const audioButtonLabel = audioUpload ? "Replace audio" : "Upload audio";
+  const audioButtonLabel = audioState.previewUrl ? "Replace audio" : "Upload audio";
 
   return (
     <>
@@ -207,9 +249,6 @@ function NumberCardItem({
               {imageState.previewUrl ? (
                 <>
                   <Image src={imageState.previewUrl} alt={`${card.label} image preview`} fill unoptimized sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 25vw" className="object-cover" />
-                  <div className="absolute inset-x-4 bottom-4 rounded-full bg-white/90 px-4 py-2 text-center text-xs font-bold text-primary shadow-sm backdrop-blur-sm">
-                    {imageState.fileName}
-                  </div>
                 </>
               ) : (
                 <>
@@ -233,7 +272,6 @@ function NumberCardItem({
                 }`}
               >
                 <p className="font-semibold">{imageState.status.message}</p>
-                {imageState.filePath ? <p className="mt-1 break-all opacity-80">{imageState.filePath}</p> : null}
               </div>
             ) : null}
           </section>
@@ -255,18 +293,18 @@ function NumberCardItem({
                 }
               }}
               className={`flex aspect-[16/9] items-center justify-center rounded-2xl ${
-                audioUpload
+                audioState.previewUrl
                   ? "cursor-pointer bg-primary-container/10 p-4"
                   : "cursor-pointer border border-dashed border-primary/25 bg-primary-container/10 px-5 py-6 text-center"
               }`}
             >
-              {audioUpload ? (
+              {audioState.previewUrl ? (
                 <div className="flex w-full flex-col justify-center gap-3" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
                   <div className="inline-flex max-w-full items-center gap-2 self-start rounded-full bg-white px-3 py-2 text-xs font-bold text-primary shadow-sm">
                     <MaterialSymbol name="record_voice_over" className="size-4" />
-                    <span className="min-w-0 truncate">{audioUpload.fileName}</span>
+                    <span className="min-w-0 truncate">{audioState.fileName}</span>
                   </div>
-                  <audio controls preload="metadata" className="w-full" src={audioUpload.previewUrl}>
+                  <audio controls preload="metadata" className="w-full" src={audioState.previewUrl ?? undefined}>
                     Your browser does not support audio playback.
                   </audio>
                 </div>
@@ -282,13 +320,27 @@ function NumberCardItem({
                 </div>
               )}
             </div>
+
+            {audioState.status.message ? (
+              <div
+                className={`mt-3 rounded-2xl px-3 py-2 text-xs ${
+                  audioState.status.state === "success"
+                    ? "bg-emerald-50 text-emerald-700"
+                    : audioState.status.state === "error"
+                      ? "bg-error/10 text-error"
+                      : "bg-primary-container/20 text-primary"
+                }`}
+              >
+                <p className="font-semibold">{audioState.status.message}</p>
+              </div>
+            ) : null}
           </section>
         </div>
 
         <div className="mt-4 flex items-center justify-between gap-3 text-xs text-on-surface-variant">
           <span>Image + audio required</span>
-          <span className={`shrink-0 rounded-full px-3 py-1 font-semibold ${imageState.previewUrl && audioUpload ? "bg-primary-container/30 text-primary" : "bg-surface text-on-surface-variant"}`}>
-            {imageState.previewUrl && audioUpload ? "Ready" : "Incomplete"}
+          <span className={`shrink-0 rounded-full px-3 py-1 font-semibold ${imageState.previewUrl && audioState.previewUrl ? "bg-primary-container/30 text-primary" : "bg-surface text-on-surface-variant"}`}>
+            {imageState.previewUrl && audioState.previewUrl ? "Ready" : "Incomplete"}
           </span>
         </div>
       </div>
@@ -305,6 +357,9 @@ export function NumbersUploadGrid({
   const [imageStates, setImageStates] = useState<Record<string, CardImageState>>(
     () => Object.fromEntries(cards.map((card) => [card.number, createEmptyImageState()])),
   );
+  const [audioStates, setAudioStates] = useState<Record<string, CardAudioState>>(
+    () => Object.fromEntries(cards.map((card) => [card.number, createEmptyAudioState()])),
+  );
   const lastUploadTokenRef = useRef(uploadAllToken);
 
   useEffect(() => {
@@ -312,12 +367,16 @@ export function NumbersUploadGrid({
       for (const imageState of Object.values(imageStates)) {
         if (imageState.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(imageState.previewUrl);
       }
+      for (const audioState of Object.values(audioStates)) {
+        if (audioState.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(audioState.previewUrl);
+      }
     };
-  }, [imageStates]);
+  }, [audioStates, imageStates]);
 
   const pendingImageCount = useMemo(
-    () => Object.values(imageStates).filter((imageState) => imageState.file && imageState.status.state !== "success").length,
-    [imageStates],
+    () => Object.values(imageStates).filter((imageState) => imageState.file && imageState.status.state !== "success").length +
+      Object.values(audioStates).filter((audioState) => audioState.file && audioState.status.state !== "success").length,
+    [audioStates, imageStates],
   );
 
   useEffect(() => {
@@ -329,31 +388,62 @@ export function NumbersUploadGrid({
 
     async function loadExistingImages() {
       try {
-        const storageBasePath = await getAuthenticatedStorageBasePath();
+        const itemKeys = cards.map((card) => sanitizeSegment(card.number));
+        const [metadataMap, audioMetadataMap] = await Promise.all([
+          fetchImageAssetMetadataMap("numbers", itemKeys),
+          fetchAudioAssetMetadataMap("numbers-audio", itemKeys),
+        ]);
+
         await Promise.all(
           cards.map(async (card) => {
-            const folderPath = `${storageBasePath}/${sanitizeSegment(card.number)}`;
-            const existingFilePath = await findExistingImagePath(folderPath);
-            if (!existingFilePath) return;
+            const cardKey = sanitizeSegment(card.number);
+            const existingFilePath =
+              metadataMap[cardKey] ??
+              (await findExistingFilePath(`${getStorageBasePath()}/${cardKey}`));
+            const existingAudioPath =
+              audioMetadataMap[cardKey] ??
+              (await findExistingFilePath(`${SUPABASE_AUDIO_FOLDER}/${cardKey}`));
+            if (existingFilePath) {
+              const signedPreviewUrl = createPreviewUrl(existingFilePath);
+              if (isCancelled) return;
 
-            const signedPreviewUrl = await createSignedPreviewUrl(existingFilePath);
-            if (isCancelled) return;
+              setImageStates((current) => {
+                const currentState = current[card.number];
+                if (!currentState || currentState.file) return current;
 
-            setImageStates((current) => {
-              const currentState = current[card.number];
-              if (!currentState || currentState.file) return current;
+                return {
+                  ...current,
+                  [card.number]: {
+                    ...currentState,
+                    fileName: existingFilePath.split("/").pop() ?? "card-image",
+                    filePath: existingFilePath,
+                    previewUrl: signedPreviewUrl,
+                    status: { state: "success", message: "Current image loaded." },
+                  },
+                };
+              });
+            }
 
-              return {
-                ...current,
-                [card.number]: {
-                  ...currentState,
-                  fileName: existingFilePath.split("/").pop() ?? "card-image",
-                  filePath: existingFilePath,
-                  previewUrl: signedPreviewUrl,
-                  status: { state: "success", message: "Existing image loaded from storage." },
-                },
-              };
-            });
+            if (existingAudioPath) {
+              if (isCancelled) return;
+
+              const signedAudioUrl = createPreviewUrl(existingAudioPath);
+              setAudioStates((current) => {
+                const currentState = current[card.number];
+                if (!currentState || currentState.file) return current;
+
+                return {
+                  ...current,
+                  [card.number]: {
+                    ...currentState,
+                    fileName: existingAudioPath.split("/").pop() ?? "card-audio",
+                    filePath: existingAudioPath,
+                    previewUrl: signedAudioUrl,
+                    status: { state: "success", message: "Current audio loaded." },
+                  },
+                };
+              });
+            }
           }),
         );
       } catch {
@@ -399,66 +489,189 @@ export function NumbersUploadGrid({
     });
   }
 
+  function setCardAudioState(cardName: string, nextState: CardAudioState) {
+    setAudioStates((current) => {
+      const previous = current[cardName];
+      if (previous?.previewUrl?.startsWith("blob:") && previous.previewUrl !== nextState.previewUrl) {
+        URL.revokeObjectURL(previous.previewUrl);
+      }
+      return { ...current, [cardName]: nextState };
+    });
+  }
+
+  function handleAudioSelected(cardName: string, file: File) {
+    const validationMessage = validateAudioFile(file);
+    if (validationMessage) {
+      setCardAudioState(cardName, {
+        file: null,
+        fileName: null,
+        filePath: null,
+        previewUrl: null,
+        status: { state: "error", message: validationMessage },
+      });
+      return;
+    }
+
+    setCardAudioState(cardName, {
+      file,
+      fileName: file.name,
+      filePath: null,
+      previewUrl: URL.createObjectURL(file),
+      status: { state: "staged", message: "Ready to upload. Click Upload All when finished." },
+    });
+  }
+
   useEffect(() => {
     async function uploadAllImages() {
-      const stagedEntries = Object.entries(imageStates).filter(
-        ([, imageState]) => imageState.file && imageState.status.state !== "success",
-      );
+      const stagedEntries = cards.filter((card) => {
+        const imageState = imageStates[card.number];
+        const audioState = audioStates[card.number];
+        return (
+          !!(imageState?.file && imageState.status.state !== "success") ||
+          !!(audioState?.file && audioState.status.state !== "success")
+        );
+      });
 
       if (!stagedEntries.length) {
         onUploadAllComplete?.();
         return;
       }
 
-      const storageBasePath = await getAuthenticatedStorageBasePath();
+      const storageBasePath = getStorageBasePath();
 
-      for (const [cardName, imageState] of stagedEntries) {
-        const file = imageState.file;
-        if (!file) continue;
+      for (const card of stagedEntries) {
+        const cardName = card.number;
+        const imageState = imageStates[cardName];
+        const audioState = audioStates[cardName];
 
-        const folderPath = `${storageBasePath}/${sanitizeSegment(cardName)}`;
-        const filePath = buildImageFilePath(storageBasePath, cardName, file.name);
+        if (imageState?.file && imageState.status.state !== "success") {
+          const file = imageState.file;
+          const folderPath = `${storageBasePath}/${sanitizeSegment(cardName)}`;
+          const filePath = buildImageFilePath(storageBasePath, cardName, file.name);
 
-        setImageStates((current) => ({
-          ...current,
-          [cardName]: {
-            ...current[cardName],
-            filePath,
-            status: { state: "loading", message: "Uploading image..." },
-          },
-        }));
-
-        try {
-          await removeImageFromSupabase(folderPath);
-          await uploadImageToSupabase(file, filePath);
-          const signedPreviewUrl = await createSignedPreviewUrl(filePath);
-
-          setImageStates((current) => {
-            const previous = current[cardName];
-            if (previous.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previous.previewUrl);
-
-            return {
-              ...current,
-              [cardName]: {
-                ...previous,
-                filePath,
-                previewUrl: signedPreviewUrl,
-                status: { state: "success", message: "Uploaded successfully." },
-              },
-            };
-          });
-        } catch (error) {
           setImageStates((current) => ({
             ...current,
             [cardName]: {
               ...current[cardName],
               filePath,
-              status: {
-                state: "error",
-                message: error instanceof Error ? error.message : "Unable to upload image right now.",
-              },
+              status: { state: "loading", message: "Uploading image..." },
             },
           }));
+
+          try {
+            await removeFolderFilesFromSupabase(folderPath);
+            await uploadFileToSupabase(file, filePath, "image/png");
+            let thumbnailPath: string | null = null;
+
+            try {
+              const thumbnailFile = await createThumbnailImageForUpload(file);
+              thumbnailPath = buildThumbnailFilePath(filePath);
+              await uploadFileToSupabase(thumbnailFile, thumbnailPath, "image/webp");
+            } catch {
+              thumbnailPath = null;
+            }
+
+            const metadataResult = await upsertImageAssetMetadata({
+              section: "numbers",
+              itemKey: sanitizeSegment(cardName),
+              imagePath: filePath,
+              thumbnailPath,
+            });
+            const signedPreviewUrl = createPreviewUrl(thumbnailPath ?? filePath);
+
+            setImageStates((current) => {
+              const previous = current[cardName];
+              if (previous.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previous.previewUrl);
+
+              return {
+                ...current,
+                [cardName]: {
+                  ...previous,
+                  file: null,
+                  fileName: imageState.file?.name ?? previous.fileName,
+                  filePath,
+                  previewUrl: signedPreviewUrl,
+                  status: {
+                    state: "success",
+                    message: metadataResult.ok
+                      ? "Uploaded successfully."
+                      : "Image uploaded successfully. Metadata sync failed.",
+                  },
+                },
+              };
+            });
+          } catch (error) {
+            setImageStates((current) => ({
+              ...current,
+              [cardName]: {
+                ...current[cardName],
+                filePath,
+                status: {
+                  state: "error",
+                  message: error instanceof Error ? error.message : "Unable to upload image right now.",
+                },
+              },
+            }));
+          }
+        }
+
+        if (audioState?.file && audioState.status.state !== "success") {
+          const filePath = buildAudioFilePath(SUPABASE_AUDIO_FOLDER, cardName, audioState.file.name);
+          const folderPath = `${SUPABASE_AUDIO_FOLDER}/${sanitizeSegment(cardName)}`;
+
+          setAudioStates((current) => ({
+            ...current,
+            [cardName]: {
+              ...current[cardName],
+              filePath,
+              status: { state: "loading", message: "Uploading audio..." },
+            },
+          }));
+
+          try {
+            await removeFolderFilesFromSupabase(folderPath);
+            await uploadFileToSupabase(audioState.file, filePath, "audio/mpeg");
+            const metadataResult = await upsertAudioAssetMetadata({
+              section: "numbers-audio",
+              itemKey: sanitizeSegment(cardName),
+              audioPath: filePath,
+            });
+            const signedAudioUrl = createPreviewUrl(filePath);
+
+            setAudioStates((current) => {
+              const previous = current[cardName];
+              if (previous.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previous.previewUrl);
+
+              return {
+                ...current,
+                [cardName]: {
+                  ...previous,
+                  file: null,
+                  fileName: audioState.file?.name ?? previous.fileName,
+                  filePath,
+                  previewUrl: signedAudioUrl,
+                  status: {
+                    state: "success",
+                    message: metadataResult.ok
+                      ? "Audio uploaded successfully."
+                      : "Audio uploaded successfully. Metadata sync failed.",
+                  },
+                },
+              };
+            });
+          } catch (error) {
+            setAudioStates((current) => ({
+              ...current,
+              [cardName]: {
+                ...current[cardName],
+                filePath,
+                status: {
+                  state: "error",
+                  message: error instanceof Error ? error.message : "Unable to upload audio right now.",
+                },
+              },
+            }));
+          }
         }
       }
 
@@ -468,7 +681,7 @@ export function NumbersUploadGrid({
     if (uploadAllToken === 0 || uploadAllToken === lastUploadTokenRef.current) return;
     lastUploadTokenRef.current = uploadAllToken;
     void uploadAllImages();
-  }, [imageStates, onUploadAllComplete, uploadAllToken]);
+  }, [audioStates, cards, imageStates, onUploadAllComplete, uploadAllToken]);
 
   return (
     <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
@@ -477,7 +690,9 @@ export function NumbersUploadGrid({
           key={card.number}
           card={card}
           imageState={imageStates[card.number] ?? createEmptyImageState()}
+          audioState={audioStates[card.number] ?? createEmptyAudioState()}
           onImageSelected={handleImageSelected}
+          onAudioSelected={handleAudioSelected}
         />
       ))}
     </div>

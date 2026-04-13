@@ -15,9 +15,42 @@ import {
   upsertImageAssetMetadata,
 } from "@/lib/supabase/image-asset-metadata";
 
+type LetterDetailCard = {
+  id: string;
+  title: string;
+};
+
+type CardUploadStatus =
+  | { state: "idle"; message: null }
+  | { state: "staged"; message: string }
+  | { state: "loading"; message: string }
+  | { state: "success"; message: string }
+  | { state: "error"; message: string };
+
+type CardImageState = {
+  file: File | null;
+  fileName: string | null;
+  filePath: string | null;
+  previewUrl: string | null;
+  status: CardUploadStatus;
+};
+
+type CardAudioState = {
+  file: File | null;
+  fileName: string | null;
+  filePath: string | null;
+  previewUrl: string | null;
+  status: CardUploadStatus;
+};
+
+type PhonicsLetterDetailManagerProps = {
+  letter: string;
+  cards: LetterDetailCard[];
+};
+
 const SUPABASE_BUCKET = "card-image";
-const SUPABASE_IMAGE_FOLDER = "uploads/images/colors-cards";
-const SUPABASE_AUDIO_FOLDER = "uploads/audio/colors";
+const SUPABASE_IMAGE_FOLDER = "uploads/images/phonics-letter-detail";
+const SUPABASE_AUDIO_FOLDER = "uploads/audio/phonics-letter-detail";
 const MAX_IMAGE_FILE_SIZE = 5 * 1024 * 1024;
 const MAX_AUDIO_FILE_SIZE = 12 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = [
@@ -37,59 +70,6 @@ const ALLOWED_AUDIO_TYPES = [
   "audio/aac",
 ] as const;
 
-type ColorCard = {
-  name: string;
-  family: string;
-  hexLabel: string;
-  swatchClassName: string;
-  contrastClassName: string;
-};
-
-type CardUploadStatus =
-  | {
-      state: "idle";
-      message: null;
-    }
-  | {
-      state: "staged";
-      message: string;
-    }
-  | {
-      state: "loading";
-      message: string;
-    }
-  | {
-      state: "success";
-      message: string;
-    }
-  | {
-      state: "error";
-      message: string;
-    };
-
-type CardImageState = {
-  file: File | null;
-  fileName: string | null;
-  filePath: string | null;
-  previewUrl: string | null;
-  status: CardUploadStatus;
-};
-
-type CardAudioState = {
-  file: File | null;
-  fileName: string | null;
-  filePath: string | null;
-  previewUrl: string | null;
-  status: CardUploadStatus;
-};
-
-type ColorsUploadGridProps = {
-  cards: ColorCard[];
-  onPendingImagesChange?: (count: number) => void;
-  uploadAllToken?: number;
-  onUploadAllComplete?: () => void;
-};
-
 function sanitizeSegment(value: string) {
   return value
     .trim()
@@ -98,26 +78,30 @@ function sanitizeSegment(value: string) {
     .replace(/^-+|-+$/g, "");
 }
 
-function buildImageFilePath(basePath: string, cardName: string, fileName: string) {
-  const fileExtension = fileName.split(".").pop()?.toLowerCase() ?? "bin";
-  const safeCardName = sanitizeSegment(cardName);
+function getStorageBasePath() {
+  return SUPABASE_IMAGE_FOLDER;
+}
 
-  return `${basePath}/${safeCardName}/card-image-${Date.now()}.${fileExtension}`;
+function buildItemKey(letter: string, cardId: string) {
+  return `${sanitizeSegment(letter)}-${sanitizeSegment(cardId)}`;
+}
+
+function buildCardFolderPath(letter: string, cardId: string) {
+  return `${getStorageBasePath()}/${sanitizeSegment(letter)}/${sanitizeSegment(cardId)}`;
+}
+
+function buildImageFilePath(letter: string, cardId: string, fileName: string) {
+  const fileExtension = fileName.split(".").pop()?.toLowerCase() ?? "bin";
+  return `${buildCardFolderPath(letter, cardId)}/card-image-${Date.now()}.${fileExtension}`;
+}
+
+function buildAudioFilePath(letter: string, cardId: string, fileName: string) {
+  const fileExtension = fileName.split(".").pop()?.toLowerCase() ?? "bin";
+  return `${SUPABASE_AUDIO_FOLDER}/${sanitizeSegment(letter)}/${sanitizeSegment(cardId)}/card-audio-${Date.now()}.${fileExtension}`;
 }
 
 function buildThumbnailFilePath(filePath: string) {
   return filePath.replace(/\.[^.]+$/, "-thumbnail.webp");
-}
-
-function buildAudioFilePath(basePath: string, cardName: string, fileName: string) {
-  const fileExtension = fileName.split(".").pop()?.toLowerCase() ?? "bin";
-  const safeCardName = sanitizeSegment(cardName);
-
-  return `${basePath}/${safeCardName}/card-audio-${Date.now()}.${fileExtension}`;
-}
-
-function getStorageBasePath() {
-  return SUPABASE_IMAGE_FOLDER;
 }
 
 function validateImageFile(file: File) {
@@ -155,10 +139,7 @@ function createEmptyImageState(): CardImageState {
     fileName: null,
     filePath: null,
     previewUrl: null,
-    status: {
-      state: "idle",
-      message: null,
-    },
+    status: { state: "idle", message: null },
   };
 }
 
@@ -168,10 +149,7 @@ function createEmptyAudioState(): CardAudioState {
     fileName: null,
     filePath: null,
     previewUrl: null,
-    status: {
-      state: "idle",
-      message: null,
-    },
+    status: { state: "idle", message: null },
   };
 }
 
@@ -191,26 +169,15 @@ async function findExistingFilePath(folderPath: string) {
     throw error;
   }
 
-  const firstFile = (data ?? []).find((file) => file.name && !file.name.endsWith("/"));
+  const firstFile = [...(data ?? [])]
+    .filter((file) => file.name && !file.name.endsWith("/"))
+    .sort((left, right) => {
+      const leftTimestamp = new Date(left.updated_at ?? left.created_at ?? 0).getTime();
+      const rightTimestamp = new Date(right.updated_at ?? right.created_at ?? 0).getTime();
+      return rightTimestamp - leftTimestamp;
+    })[0];
 
-  if (!firstFile) {
-    return null;
-  }
-
-  return `${folderPath}/${firstFile.name}`;
-}
-
-async function uploadFileToSupabase(file: File, filePath: string, fallbackType: string) {
-  const supabase = getSupabaseBrowserClient();
-  const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(filePath, file, {
-    cacheControl: "3600",
-    upsert: true,
-    contentType: file.type || fallbackType,
-  });
-
-  if (error) {
-    throw error;
-  }
+  return firstFile ? `${folderPath}/${firstFile.name}` : null;
 }
 
 async function removeFolderFilesFromSupabase(folderPath: string) {
@@ -223,69 +190,71 @@ async function removeFolderFilesFromSupabase(folderPath: string) {
     throw error;
   }
 
-  const filePaths = (data ?? []).map((file) => `${folderPath}/${file.name}`);
+  const filePathsToRemove = (data ?? [])
+    .filter((file) => file.name && !file.name.endsWith("/"))
+    .map((file) => `${folderPath}/${file.name}`);
 
-  if (!filePaths.length) {
+  if (!filePathsToRemove.length) {
     return;
   }
 
   const { error: removeError } = await supabase.storage
     .from(SUPABASE_BUCKET)
-    .remove(filePaths);
+    .remove(filePathsToRemove);
 
   if (removeError) {
     throw removeError;
   }
 }
 
-function ColorManagementCard({
+async function uploadFileToSupabase(file: File, filePath: string, fallbackType: string) {
+  const supabase = getSupabaseBrowserClient();
+  const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(filePath, file, {
+    cacheControl: "0",
+    upsert: true,
+    contentType: file.type || fallbackType,
+  });
+
+  if (error) {
+    throw error;
+  }
+}
+
+function LetterDetailUploadCard({
+  letter,
   card,
   imageState,
   audioState,
   onImageSelected,
   onAudioSelected,
 }: {
-  card: ColorCard;
+  letter: string;
+  card: LetterDetailCard;
   imageState: CardImageState;
   audioState: CardAudioState;
-  onImageSelected: (cardName: string, file: File) => void;
-  onAudioSelected: (cardName: string, file: File) => void;
+  onImageSelected: (cardId: string, file: File) => void;
+  onAudioSelected: (cardId: string, file: File) => void;
 }) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const audioInputRef = useRef<HTMLInputElement | null>(null);
 
-  function handleChooseImage() {
-    imageInputRef.current?.click();
-  }
-
-  function handleChooseAudio() {
-    audioInputRef.current?.click();
-  }
-
   function handleImageChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
+    if (!file) return;
 
-    if (!file) {
-      return;
-    }
-
-    onImageSelected(card.name, file);
+    onImageSelected(card.id, file);
     event.target.value = "";
   }
 
   function handleAudioChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
+    if (!file) return;
+    onAudioSelected(card.id, file);
 
-    if (!file) {
-      return;
-    }
-
-    onAudioSelected(card.name, file);
     event.target.value = "";
   }
 
   const imageButtonLabel = imageState.previewUrl ? "Replace image" : "Upload image";
-  const audioButtonLabel = audioState.previewUrl ? "Replace audio" : "Upload audio";
 
   return (
     <>
@@ -304,40 +273,31 @@ function ColorManagementCard({
         onChange={handleAudioChange}
       />
 
-      <div className="group flex h-full flex-col rounded-2xl border border-surface-variant/20 bg-surface-container-lowest p-5 shadow-[0px_10px_30px_rgba(44,47,49,0.04)] transition-all hover:-translate-y-1 hover:shadow-[0px_20px_40px_rgba(44,47,49,0.08)] md:p-6">
-        <div className="mb-6 grid grid-cols-[56px_1fr_56px] items-center gap-3">
-          <div
-            className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-center text-[11px] font-black uppercase shadow-sm ${card.swatchClassName} ${card.contrastClassName}`}
-          >
-            {card.name}
+      <article className="group flex h-full flex-col rounded-2xl border border-surface-variant/20 bg-surface-container-lowest p-5 shadow-[0px_10px_30px_rgba(44,47,49,0.04)] transition-all hover:-translate-y-1 hover:shadow-[0px_20px_40px_rgba(44,47,49,0.08)] md:p-6">
+        <div className="mb-6 grid grid-cols-[56px_1fr] items-center gap-3">
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-primary-container/20 text-3xl font-black text-primary">
+            {letter}
           </div>
-          <div className="min-w-0 text-center">
-            <p className="text-lg font-bold text-on-surface sm:text-xl">
-              {card.name}
-            </p>
+          <div className="min-w-0">
+            <p className="text-lg font-bold text-on-surface sm:text-xl">{card.title}</p>
           </div>
-          <div aria-hidden="true" />
         </div>
 
         <div className="flex flex-1 flex-col gap-4">
           <section className="rounded-2xl border border-surface-variant/20 bg-white/70 p-4">
             <div className="mb-4">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-on-surface">Image</p>
-                <p className="text-xs text-on-surface-variant">
-                  Add a visual reference for this color.
-                </p>
-              </div>
+              <p className="text-sm font-semibold text-on-surface">Image</p>
+              <p className="text-xs text-on-surface-variant">Add a visual reference for this card.</p>
             </div>
 
             <div
               role="button"
               tabIndex={0}
-              onClick={handleChooseImage}
+              onClick={() => imageInputRef.current?.click()}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  handleChooseImage();
+                  imageInputRef.current?.click();
                 }
               }}
               className={`relative overflow-hidden rounded-2xl ${
@@ -347,27 +307,20 @@ function ColorManagementCard({
               }`}
             >
               {imageState.previewUrl ? (
-                <>
-                  <Image
-                    src={imageState.previewUrl}
-                    alt={`${card.name} upload preview`}
-                    fill
-                    unoptimized
-                    sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 25vw"
-                    className="object-cover"
-                  />
-                </>
+                <Image
+                  src={imageState.previewUrl}
+                  alt={`${card.title} upload preview`}
+                  fill
+                  unoptimized
+                  sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 25vw"
+                  className="object-cover"
+                />
               ) : (
                 <>
-                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary text-on-primary shadow-sm">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary text-on-primary">
                     <MaterialSymbol name="add_a_photo" className="size-8" />
                   </div>
-                  <p className="mt-4 text-lg font-bold text-on-surface">
-                    {imageButtonLabel}
-                  </p>
-                  <p className="mt-1 max-w-[14rem] text-sm text-on-surface-variant">
-                    {card.hexLabel} | {card.family} color reference
-                  </p>
+                  <p className="mt-4 text-lg font-bold text-on-surface">{imageButtonLabel}</p>
                 </>
               )}
             </div>
@@ -389,22 +342,18 @@ function ColorManagementCard({
 
           <section className="rounded-2xl border border-surface-variant/20 bg-white/70 p-4">
             <div className="mb-4">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-on-surface">Audio</p>
-                <p className="text-xs text-on-surface-variant">
-                  Upload the MP3 color pronunciation clip.
-                </p>
-              </div>
+              <p className="text-sm font-semibold text-on-surface">Audio</p>
+              <p className="text-xs text-on-surface-variant">Upload the MP3 pronunciation clip.</p>
             </div>
 
             <div
               role="button"
               tabIndex={0}
-              onClick={handleChooseAudio}
+              onClick={() => audioInputRef.current?.click()}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  handleChooseAudio();
+                  audioInputRef.current?.click();
                 }
               }}
               className={`flex aspect-[16/9] items-center justify-center rounded-2xl ${
@@ -423,12 +372,7 @@ function ColorManagementCard({
                     <MaterialSymbol name="record_voice_over" className="size-4" />
                     <span className="min-w-0 truncate">{audioState.fileName}</span>
                   </div>
-                  <audio
-                    controls
-                    preload="metadata"
-                    className="w-full"
-                    src={audioState.previewUrl ?? undefined}
-                  >
+                  <audio controls preload="metadata" className="w-full" src={audioState.previewUrl ?? undefined}>
                     Your browser does not support audio playback.
                   </audio>
                 </div>
@@ -438,10 +382,7 @@ function ColorManagementCard({
                     <MaterialSymbol name="record_voice_over" className="size-7" />
                   </div>
                   <p className="mt-4 text-sm font-bold leading-none text-on-surface sm:text-base">
-                    {audioButtonLabel}
-                  </p>
-                  <p className="mt-2 text-xs leading-5 text-on-surface-variant sm:text-sm">
-                    Add the spoken pronunciation for {card.name.toLowerCase()}.
+                    Upload audio
                   </p>
                 </div>
               )}
@@ -462,37 +403,23 @@ function ColorManagementCard({
             ) : null}
           </section>
         </div>
-
-        <div className="mt-4 flex items-center justify-between gap-3 text-xs text-on-surface-variant">
-          <span>{card.family} | {card.hexLabel}</span>
-          <span
-            className={`shrink-0 rounded-full px-3 py-1 font-semibold ${
-              imageState.previewUrl && audioState.previewUrl
-                ? "bg-primary-container/30 text-primary"
-                : "bg-surface text-on-surface-variant"
-            }`}
-          >
-            {imageState.previewUrl && audioState.previewUrl ? "Ready" : "Incomplete"}
-          </span>
-        </div>
-      </div>
+      </article>
     </>
   );
 }
 
-export function ColorsUploadGrid({
+export function PhonicsLetterDetailManager({
+  letter,
   cards,
-  onPendingImagesChange,
-  uploadAllToken = 0,
-  onUploadAllComplete,
-}: ColorsUploadGridProps) {
-  const [imageStates, setImageStates] = useState<Record<string, CardImageState>>(() =>
-    Object.fromEntries(cards.map((card) => [card.name, createEmptyImageState()])),
+}: PhonicsLetterDetailManagerProps) {
+  const [imageStates, setImageStates] = useState<Record<string, CardImageState>>(
+    () => Object.fromEntries(cards.map((card) => [card.id, createEmptyImageState()])),
   );
-  const [audioStates, setAudioStates] = useState<Record<string, CardAudioState>>(() =>
-    Object.fromEntries(cards.map((card) => [card.name, createEmptyAudioState()])),
+  const [audioStates, setAudioStates] = useState<Record<string, CardAudioState>>(
+    () => Object.fromEntries(cards.map((card) => [card.id, createEmptyAudioState()])),
   );
-
+  const [uploadAllToken, setUploadAllToken] = useState(0);
+  const [isUploadingAll, setIsUploadingAll] = useState(false);
   const lastUploadTokenRef = useRef(uploadAllToken);
 
   useEffect(() => {
@@ -522,85 +449,75 @@ export function ColorsUploadGrid({
   );
 
   useEffect(() => {
-    onPendingImagesChange?.(pendingImageCount);
-  }, [onPendingImagesChange, pendingImageCount]);
-
-  useEffect(() => {
     let isCancelled = false;
 
     async function loadExistingImages() {
       try {
-        const itemKeys = cards.map((card) => sanitizeSegment(card.name));
+        const itemKeys = cards.map((card) => buildItemKey(letter, card.id));
         const [metadataMap, audioMetadataMap] = await Promise.all([
-          fetchImageAssetMetadataMap("colors", itemKeys),
-          fetchAudioAssetMetadataMap("colors-audio", itemKeys),
+          fetchImageAssetMetadataMap("phonics-letter-detail", itemKeys),
+          fetchAudioAssetMetadataMap("phonics-letter-detail-audio", itemKeys),
         ]);
 
         await Promise.all(
           cards.map(async (card) => {
-            const cardKey = sanitizeSegment(card.name);
             const existingFilePath =
-              metadataMap[cardKey] ??
-              (await findExistingFilePath(`${getStorageBasePath()}/${cardKey}`));
+              metadataMap[buildItemKey(letter, card.id)] ??
+              (await findExistingFilePath(buildCardFolderPath(letter, card.id)));
             const existingAudioPath =
-              audioMetadataMap[cardKey] ??
-              (await findExistingFilePath(`${SUPABASE_AUDIO_FOLDER}/${cardKey}`));
+              audioMetadataMap[buildItemKey(letter, card.id)] ??
+              (await findExistingFilePath(`${SUPABASE_AUDIO_FOLDER}/${sanitizeSegment(letter)}/${sanitizeSegment(card.id)}`));
+            if (!existingFilePath) {
+              if (!existingAudioPath) {
+                return;
+              }
+            }
 
             if (existingFilePath) {
               const signedPreviewUrl = createPreviewUrl(existingFilePath);
-
               if (isCancelled) {
                 return;
               }
 
               setImageStates((current) => {
-                const currentState = current[card.name];
-
+                const currentState = current[card.id];
                 if (!currentState || currentState.file) {
                   return current;
                 }
 
                 return {
                   ...current,
-                  [card.name]: {
+                  [card.id]: {
                     ...currentState,
                     fileName: existingFilePath.split("/").pop() ?? "card-image",
                     filePath: existingFilePath,
                     previewUrl: signedPreviewUrl,
-                    status: {
-                      state: "success",
-                      message: "Current image loaded.",
-                    },
+                    status: { state: "success", message: "Current image loaded." },
                   },
                 };
               });
             }
 
             if (existingAudioPath) {
+              const signedAudioUrl = createPreviewUrl(existingAudioPath);
               if (isCancelled) {
                 return;
               }
 
-              const signedAudioUrl = createPreviewUrl(existingAudioPath);
-
               setAudioStates((current) => {
-                const currentState = current[card.name];
-
+                const currentState = current[card.id];
                 if (!currentState || currentState.file) {
                   return current;
                 }
 
                 return {
                   ...current,
-                  [card.name]: {
+                  [card.id]: {
                     ...currentState,
                     fileName: existingAudioPath.split("/").pop() ?? "card-audio",
                     filePath: existingAudioPath,
                     previewUrl: signedAudioUrl,
-                    status: {
-                      state: "success",
-                      message: "Current audio loaded.",
-                    },
+                    status: { state: "success", message: "Current audio loaded." },
                   },
                 };
               });
@@ -608,7 +525,7 @@ export function ColorsUploadGrid({
           }),
         );
       } catch {
-        // Leave cards empty when there is no session yet or storage lookup fails.
+        // Keep local state empty when storage lookup fails.
       }
     }
 
@@ -617,107 +534,88 @@ export function ColorsUploadGrid({
     return () => {
       isCancelled = true;
     };
-  }, [cards]);
+  }, [cards, letter]);
 
-  function setCardImageState(cardName: string, nextState: CardImageState) {
+  function setCardImageState(cardId: string, nextState: CardImageState) {
     setImageStates((current) => {
-      const previous = current[cardName];
-
-      if (
-        previous?.previewUrl?.startsWith("blob:") &&
-        previous.previewUrl !== nextState.previewUrl
-      ) {
+      const previous = current[cardId];
+      if (previous?.previewUrl?.startsWith("blob:") && previous.previewUrl !== nextState.previewUrl) {
         URL.revokeObjectURL(previous.previewUrl);
       }
 
-      return {
-        ...current,
-        [cardName]: nextState,
-      };
+      return { ...current, [cardId]: nextState };
     });
   }
 
-  function handleImageSelected(cardName: string, file: File) {
-    const validationMessage = validateImageFile(file);
-
-    if (validationMessage) {
-      setCardImageState(cardName, {
-        file: null,
-        fileName: null,
-        filePath: null,
-        previewUrl: null,
-        status: {
-          state: "error",
-          message: validationMessage,
-        },
-      });
-      return;
-    }
-
-    setCardImageState(cardName, {
-      file,
-      fileName: file.name,
-      filePath: null,
-      previewUrl: URL.createObjectURL(file),
-      status: {
-        state: "staged",
-        message: "Ready to upload. Click Upload All when finished.",
-      },
-    });
-  }
-
-  function setCardAudioState(cardName: string, nextState: CardAudioState) {
+  function setCardAudioState(cardId: string, nextState: CardAudioState) {
     setAudioStates((current) => {
-      const previous = current[cardName];
-
-      if (
-        previous?.previewUrl?.startsWith("blob:") &&
-        previous.previewUrl !== nextState.previewUrl
-      ) {
+      const previous = current[cardId];
+      if (previous?.previewUrl?.startsWith("blob:") && previous.previewUrl !== nextState.previewUrl) {
         URL.revokeObjectURL(previous.previewUrl);
       }
 
-      return {
-        ...current,
-        [cardName]: nextState,
-      };
+      return { ...current, [cardId]: nextState };
     });
   }
 
-  function handleAudioSelected(cardName: string, file: File) {
-    const validationMessage = validateAudioFile(file);
-
+  function handleImageSelected(cardId: string, file: File) {
+    const validationMessage = validateImageFile(file);
     if (validationMessage) {
-      setCardAudioState(cardName, {
+      setCardImageState(cardId, {
         file: null,
         fileName: null,
         filePath: null,
         previewUrl: null,
-        status: {
-          state: "error",
-          message: validationMessage,
-        },
+        status: { state: "error", message: validationMessage },
       });
       return;
     }
 
-    setCardAudioState(cardName, {
+    setCardImageState(cardId, {
       file,
       fileName: file.name,
       filePath: null,
       previewUrl: URL.createObjectURL(file),
-      status: {
-        state: "staged",
-        message: "Ready to upload. Click Upload All when finished.",
-      },
+      status: { state: "staged", message: "Ready to upload. Click Upload All when finished." },
     });
+  }
+
+  function handleAudioSelected(cardId: string, file: File) {
+    const validationMessage = validateAudioFile(file);
+    if (validationMessage) {
+      setCardAudioState(cardId, {
+        file: null,
+        fileName: null,
+        filePath: null,
+        previewUrl: null,
+        status: { state: "error", message: validationMessage },
+      });
+      return;
+    }
+
+    setCardAudioState(cardId, {
+      file,
+      fileName: file.name,
+      filePath: null,
+      previewUrl: URL.createObjectURL(file),
+      status: { state: "staged", message: "Ready to upload. Click Upload All when finished." },
+    });
+  }
+
+  function handleUploadAll() {
+    if (!pendingImageCount || isUploadingAll) {
+      return;
+    }
+
+    setIsUploadingAll(true);
+    setUploadAllToken((current) => current + 1);
   }
 
   useEffect(() => {
     async function uploadAllImages() {
       const stagedEntries = cards.filter((card) => {
-        const imageState = imageStates[card.name];
-        const audioState = audioStates[card.name];
+        const imageState = imageStates[card.id];
+        const audioState = audioStates[card.id];
 
         return (
           !!(imageState?.file && imageState.status.state !== "success") ||
@@ -726,36 +624,30 @@ export function ColorsUploadGrid({
       });
 
       if (!stagedEntries.length) {
-        onUploadAllComplete?.();
+        setIsUploadingAll(false);
         return;
       }
 
-      const storageBasePath = getStorageBasePath();
-
       for (const card of stagedEntries) {
-        const cardName = card.name;
-        const imageState = imageStates[cardName];
-        const audioState = audioStates[cardName];
+        const cardId = card.id;
+        const imageState = imageStates[cardId];
+        const audioState = audioStates[cardId];
 
         if (imageState?.file && imageState.status.state !== "success") {
           const file = imageState.file;
-          const folderPath = `${storageBasePath}/${sanitizeSegment(cardName)}`;
-          const filePath = buildImageFilePath(storageBasePath, cardName, file.name);
+          const filePath = buildImageFilePath(letter, cardId, file.name);
 
           setImageStates((current) => ({
             ...current,
-            [cardName]: {
-              ...current[cardName],
+            [cardId]: {
+              ...current[cardId],
               filePath,
-              status: {
-                state: "loading",
-                message: "Uploading image...",
-              },
+              status: { state: "loading", message: "Uploading image..." },
             },
           }));
 
           try {
-            await removeFolderFilesFromSupabase(folderPath);
+            await removeFolderFilesFromSupabase(buildCardFolderPath(letter, cardId));
             await uploadFileToSupabase(file, filePath, "image/png");
             let thumbnailPath: string | null = null;
 
@@ -768,26 +660,25 @@ export function ColorsUploadGrid({
             }
 
             const metadataResult = await upsertImageAssetMetadata({
-              section: "colors",
-              itemKey: sanitizeSegment(cardName),
+              section: "phonics-letter-detail",
+              itemKey: buildItemKey(letter, cardId),
               imagePath: filePath,
               thumbnailPath,
             });
             const signedPreviewUrl = createPreviewUrl(thumbnailPath ?? filePath);
 
             setImageStates((current) => {
-              const previous = current[cardName];
-
+              const previous = current[cardId];
               if (previous.previewUrl?.startsWith("blob:")) {
                 URL.revokeObjectURL(previous.previewUrl);
               }
 
               return {
                 ...current,
-                [cardName]: {
+                [cardId]: {
                   ...previous,
                   file: null,
-                  fileName: imageState.file?.name ?? previous.fileName,
+                  fileName: file.name,
                   filePath,
                   previewUrl: signedPreviewUrl,
                   status: {
@@ -802,15 +693,12 @@ export function ColorsUploadGrid({
           } catch (error) {
             setImageStates((current) => ({
               ...current,
-              [cardName]: {
-                ...current[cardName],
+              [cardId]: {
+                ...current[cardId],
                 filePath,
                 status: {
                   state: "error",
-                  message:
-                    error instanceof Error
-                      ? error.message
-                      : "Unable to upload image right now.",
+                  message: error instanceof Error ? error.message : "Unable to upload image right now.",
                 },
               },
             }));
@@ -818,18 +706,15 @@ export function ColorsUploadGrid({
         }
 
         if (audioState?.file && audioState.status.state !== "success") {
-          const filePath = buildAudioFilePath(SUPABASE_AUDIO_FOLDER, cardName, audioState.file.name);
-          const folderPath = `${SUPABASE_AUDIO_FOLDER}/${sanitizeSegment(cardName)}`;
+          const filePath = buildAudioFilePath(letter, cardId, audioState.file.name);
+          const folderPath = `${SUPABASE_AUDIO_FOLDER}/${sanitizeSegment(letter)}/${sanitizeSegment(cardId)}`;
 
           setAudioStates((current) => ({
             ...current,
-            [cardName]: {
-              ...current[cardName],
+            [cardId]: {
+              ...current[cardId],
               filePath,
-              status: {
-                state: "loading",
-                message: "Uploading audio...",
-              },
+              status: { state: "loading", message: "Uploading audio..." },
             },
           }));
 
@@ -837,22 +722,21 @@ export function ColorsUploadGrid({
             await removeFolderFilesFromSupabase(folderPath);
             await uploadFileToSupabase(audioState.file, filePath, "audio/mpeg");
             const metadataResult = await upsertAudioAssetMetadata({
-              section: "colors-audio",
-              itemKey: sanitizeSegment(cardName),
+              section: "phonics-letter-detail-audio",
+              itemKey: buildItemKey(letter, cardId),
               audioPath: filePath,
             });
             const signedAudioUrl = createPreviewUrl(filePath);
 
             setAudioStates((current) => {
-              const previous = current[cardName];
-
+              const previous = current[cardId];
               if (previous.previewUrl?.startsWith("blob:")) {
                 URL.revokeObjectURL(previous.previewUrl);
               }
 
               return {
                 ...current,
-                [cardName]: {
+                [cardId]: {
                   ...previous,
                   file: null,
                   fileName: audioState.file?.name ?? previous.fileName,
@@ -870,15 +754,12 @@ export function ColorsUploadGrid({
           } catch (error) {
             setAudioStates((current) => ({
               ...current,
-              [cardName]: {
-                ...current[cardName],
+              [cardId]: {
+                ...current[cardId],
                 filePath,
                 status: {
                   state: "error",
-                  message:
-                    error instanceof Error
-                      ? error.message
-                      : "Unable to upload audio right now.",
+                  message: error instanceof Error ? error.message : "Unable to upload audio right now.",
                 },
               },
             }));
@@ -886,7 +767,7 @@ export function ColorsUploadGrid({
         }
       }
 
-      onUploadAllComplete?.();
+      setIsUploadingAll(false);
     }
 
     if (uploadAllToken === 0 || uploadAllToken === lastUploadTokenRef.current) {
@@ -895,20 +776,39 @@ export function ColorsUploadGrid({
 
     lastUploadTokenRef.current = uploadAllToken;
     void uploadAllImages();
-  }, [audioStates, cards, imageStates, onUploadAllComplete, uploadAllToken]);
+  }, [audioStates, cards, imageStates, letter, uploadAllToken]);
 
   return (
-    <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
-      {cards.map((card) => (
-        <ColorManagementCard
-          key={card.name}
-          card={card}
-          imageState={imageStates[card.name] ?? createEmptyImageState()}
-          audioState={audioStates[card.name] ?? createEmptyAudioState()}
-          onImageSelected={handleImageSelected}
-          onAudioSelected={handleAudioSelected}
-        />
-      ))}
-    </div>
+    <>
+      <div className="mb-12 flex flex-col justify-between gap-6 md:flex-row md:items-end">
+        <div />
+
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={handleUploadAll}
+            disabled={!pendingImageCount || isUploadingAll}
+            className="cursor-pointer flex items-center gap-2 rounded-full bg-primary px-8 py-3 font-semibold text-on-primary shadow-lg shadow-primary/20 transition-all hover:scale-[1.02] active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100"
+          >
+            <MaterialSymbol name="publish" className="size-5" />
+            <span>{isUploadingAll ? "Uploading..." : "Upload All"}</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+        {cards.map((card) => (
+          <LetterDetailUploadCard
+            key={card.id}
+            letter={letter}
+            card={card}
+            imageState={imageStates[card.id] ?? createEmptyImageState()}
+            audioState={audioStates[card.id] ?? createEmptyAudioState()}
+            onImageSelected={handleImageSelected}
+            onAudioSelected={handleAudioSelected}
+          />
+        ))}
+      </div>
+    </>
   );
 }

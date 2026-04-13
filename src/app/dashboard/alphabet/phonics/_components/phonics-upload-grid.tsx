@@ -1,25 +1,52 @@
 "use client";
 
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { MaterialSymbol } from "@/app/_components/material-symbol";
+import {
+  createThumbnailImageForUpload,
+  normalizeImageForCardUpload,
+} from "@/lib/browser-image-normalization";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import {
+  fetchAudioAssetMetadataMap,
+  upsertAudioAssetMetadata,
+} from "@/lib/supabase/audio-asset-metadata";
+import {
+  fetchImageAssetMetadataMap,
+  upsertImageAssetMetadata,
+} from "@/lib/supabase/image-asset-metadata";
 
 const SUPABASE_BUCKET = "card-image";
 const SUPABASE_IMAGE_FOLDER = "uploads/images/phonics-cards";
+const SUPABASE_AUDIO_FOLDER = "uploads/audio/phonics";
 const MAX_IMAGE_FILE_SIZE = 5 * 1024 * 1024;
+const MAX_AUDIO_FILE_SIZE = 12 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = [
   "image/png",
   "image/jpeg",
   "image/jpg",
   "image/webp",
 ] as const;
+const ALLOWED_AUDIO_TYPES = [
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/aac",
+] as const;
 
 type PhonicsCard = {
-  letter: string;
+  id: string;
+  badge: string;
   label: string;
   pronunciation: string;
+  detailHref?: string;
 };
 
 type CardUploadStatus =
@@ -37,9 +64,12 @@ type CardImageState = {
   status: CardUploadStatus;
 };
 
-type AudioUploadState = {
-  fileName: string;
-  previewUrl: string;
+type CardAudioState = {
+  file: File | null;
+  fileName: string | null;
+  filePath: string | null;
+  previewUrl: string | null;
+  status: CardUploadStatus;
 };
 
 type PhonicsUploadGridProps = {
@@ -53,22 +83,18 @@ function sanitizeSegment(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-function buildImageFilePath(basePath: string, cardName: string, fileName: string) {
+function buildImageFilePath(basePath: string, cardId: string, fileName: string) {
   const fileExtension = fileName.split(".").pop()?.toLowerCase() ?? "bin";
-  return `${basePath}/${sanitizeSegment(cardName)}/card-image.${fileExtension}`;
+  return `${basePath}/${sanitizeSegment(cardId)}/card-image-${Date.now()}.${fileExtension}`;
 }
 
-async function getAuthenticatedStorageBasePath() {
-  const supabase = getSupabaseBrowserClient();
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
+function buildThumbnailFilePath(filePath: string) {
+  return filePath.replace(/\.[^.]+$/, "-thumbnail.webp");
+}
 
-  if (error) throw error;
-  if (!user) throw new Error("You need to be signed in before uploading files.");
-
-  return SUPABASE_IMAGE_FOLDER;
+function buildAudioFilePath(basePath: string, cardId: string, fileName: string) {
+  const fileExtension = fileName.split(".").pop()?.toLowerCase() ?? "bin";
+  return `${basePath}/${sanitizeSegment(cardId)}/card-audio-${Date.now()}.${fileExtension}`;
 }
 
 function validateImageFile(file: File) {
@@ -77,6 +103,21 @@ function validateImageFile(file: File) {
   }
   if (file.size > MAX_IMAGE_FILE_SIZE) {
     return "Image size must be 5MB or smaller.";
+  }
+  return null;
+}
+
+function validateAudioFile(file: File) {
+  const hasAllowedMimeType = ALLOWED_AUDIO_TYPES.includes(
+    file.type as (typeof ALLOWED_AUDIO_TYPES)[number],
+  );
+  const hasAllowedExtension = /\.(mp3|wav|ogg|m4a|aac)$/i.test(file.name);
+
+  if (!hasAllowedMimeType && !hasAllowedExtension) {
+    return "Please upload an MP3, WAV, OGG, M4A, or AAC audio file.";
+  }
+  if (file.size > MAX_AUDIO_FILE_SIZE) {
+    return "Audio size must be 12MB or smaller.";
   }
   return null;
 }
@@ -91,104 +132,162 @@ function createEmptyImageState(): CardImageState {
   };
 }
 
-async function createSignedPreviewUrl(filePath: string) {
-  const supabase = getSupabaseBrowserClient();
-  const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).createSignedUrl(filePath, 3600);
-  if (error) throw error;
-  return data.signedUrl;
+function createEmptyAudioState(): CardAudioState {
+  return {
+    file: null,
+    fileName: null,
+    filePath: null,
+    previewUrl: null,
+    status: { state: "idle", message: null },
+  };
 }
 
-async function findExistingImagePath(folderPath: string) {
+function shouldNormalizeImageUpload(cardId: string) {
+  return sanitizeSegment(cardId) !== "phonics-button";
+}
+
+function shouldGenerateThumbnail(cardId: string) {
+  return sanitizeSegment(cardId) !== "phonics-button";
+}
+
+function createPreviewUrl(filePath: string) {
+  const supabase = getSupabaseBrowserClient();
+  const { data } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath);
+  return data.publicUrl;
+}
+
+async function findExistingFilePath(folderPath: string) {
   const supabase = getSupabaseBrowserClient();
   const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).list(folderPath, { limit: 100 });
   if (error) throw error;
 
-  const firstFile = (data ?? []).find((file) => file.name && !file.name.endsWith("/"));
+  const firstFile = [...(data ?? [])]
+    .filter((file) => file.name && !file.name.endsWith("/"))
+    .sort((left, right) => {
+      const leftIsThumbnail = left.name.includes("-thumbnail.");
+      const rightIsThumbnail = right.name.includes("-thumbnail.");
+      if (leftIsThumbnail !== rightIsThumbnail) {
+        return leftIsThumbnail ? 1 : -1;
+      }
+      const leftTimestamp = new Date(left.updated_at ?? left.created_at ?? 0).getTime();
+      const rightTimestamp = new Date(right.updated_at ?? right.created_at ?? 0).getTime();
+      return rightTimestamp - leftTimestamp;
+    })[0];
+
   return firstFile ? `${folderPath}/${firstFile.name}` : null;
 }
 
-async function uploadImageToSupabase(file: File, filePath: string) {
+async function uploadFileToSupabase(file: File, filePath: string, fallbackType: string) {
   const supabase = getSupabaseBrowserClient();
   const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(filePath, file, {
-    cacheControl: "3600",
+    cacheControl: "0",
     upsert: true,
-    contentType: file.type,
+    contentType: file.type || fallbackType,
   });
   if (error) throw error;
 }
 
-async function removeImageFromSupabase(folderPath: string) {
+async function removeFolderFilesFromSupabase(folderPath: string) {
   const supabase = getSupabaseBrowserClient();
   const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).list(folderPath, { limit: 100 });
   if (error) throw error;
 
-  const filePaths = (data ?? []).map((file) => `${folderPath}/${file.name}`);
-  if (!filePaths.length) return;
+  const filePathsToRemove = (data ?? [])
+    .filter((file) => file.name && !file.name.endsWith("/"))
+    .map((file) => `${folderPath}/${file.name}`);
 
-  const { error: removeError } = await supabase.storage.from(SUPABASE_BUCKET).remove(filePaths);
+  if (!filePathsToRemove.length) return;
+
+  const { error: removeError } = await supabase.storage.from(SUPABASE_BUCKET).remove(filePathsToRemove);
   if (removeError) throw removeError;
 }
 
 function PhonicsLetterCard({
   card,
   imageState,
+  audioState,
   onImageSelected,
+  onAudioSelected,
 }: {
   card: PhonicsCard;
   imageState: CardImageState;
-  onImageSelected: (cardName: string, file: File) => void;
+  audioState: CardAudioState;
+  onImageSelected: (cardId: string, file: File) => Promise<void>;
+  onAudioSelected: (cardId: string, file: File) => void;
 }) {
+  const router = useRouter();
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const audioInputRef = useRef<HTMLInputElement | null>(null);
-  const [audioUpload, setAudioUpload] = useState<AudioUploadState | null>(null);
 
-  useEffect(() => {
-    return () => {
-      if (audioUpload?.previewUrl) URL.revokeObjectURL(audioUpload.previewUrl);
-    };
-  }, [audioUpload]);
+  function handleCardNavigation() {
+    if (card.detailHref) {
+      router.push(card.detailHref);
+    }
+  }
 
   function handleImageChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    onImageSelected(card.letter, file);
+    void onImageSelected(card.id, file);
     event.target.value = "";
   }
 
   function handleAudioChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-
-    setAudioUpload((current) => {
-      if (current?.previewUrl) URL.revokeObjectURL(current.previewUrl);
-      return { fileName: file.name, previewUrl: URL.createObjectURL(file) };
-    });
+    onAudioSelected(card.id, file);
+    event.target.value = "";
   }
 
   const imageButtonLabel = imageState.previewUrl ? "Replace image" : "Upload image";
-  const audioButtonLabel = audioUpload ? "Replace audio" : "Upload audio";
+  const audioButtonLabel = audioState.previewUrl ? "Replace audio" : "Upload audio";
 
   return (
     <>
       <input ref={imageInputRef} type="file" accept={ALLOWED_IMAGE_TYPES.join(",")} className="hidden" onChange={handleImageChange} />
-      <input ref={audioInputRef} type="file" accept="audio/*,.mp3" className="hidden" onChange={handleAudioChange} />
+      <input ref={audioInputRef} type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac" className="hidden" onChange={handleAudioChange} />
 
-      <div className="group flex h-full flex-col rounded-2xl border border-surface-variant/20 bg-surface-container-lowest p-5 shadow-[0px_10px_30px_rgba(44,47,49,0.04)] transition-all hover:-translate-y-1 hover:shadow-[0px_20px_40px_rgba(44,47,49,0.08)] md:p-6">
+      <div
+        role={card.detailHref ? "link" : undefined}
+        tabIndex={card.detailHref ? 0 : undefined}
+        onClick={card.detailHref ? handleCardNavigation : undefined}
+        onKeyDown={card.detailHref ? (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            handleCardNavigation();
+          }
+        } : undefined}
+        className={`group flex h-full flex-col rounded-2xl border border-surface-variant/20 bg-surface-container-lowest p-5 shadow-[0px_10px_30px_rgba(44,47,49,0.04)] transition-all hover:-translate-y-1 hover:shadow-[0px_20px_40px_rgba(44,47,49,0.08)] md:p-6 ${card.detailHref ? "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-fixed-dim" : ""}`}
+      >
         <div className="mb-6 grid grid-cols-[56px_1fr_56px] items-center gap-3">
-          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-primary-container/20 text-3xl font-black text-primary">
-            {card.letter}
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-primary-container/20 text-2xl font-black text-primary">
+            {card.badge}
           </div>
           <div className="min-w-0 text-center">
-            <p className="text-lg font-bold text-on-surface sm:text-xl">Letter {card.letter}</p>
+            <p className="text-lg font-bold text-on-surface sm:text-xl">{card.label}</p>
+            <p className="mt-1 text-xs font-medium text-on-surface-variant">
+              {card.detailHref ? "Open letter page" : "Main phonics button"}
+            </p>
           </div>
-          <div aria-hidden="true" />
+          <div className="flex justify-end">
+            {card.detailHref ? (
+              <MaterialSymbol
+                name="arrow_forward"
+                className="size-5 text-on-surface-variant transition-transform group-hover:translate-x-1"
+              />
+            ) : <div aria-hidden="true" className="size-5" />}
+          </div>
         </div>
 
         <div className="flex flex-1 flex-col gap-4">
-          <section className="rounded-2xl border border-surface-variant/20 bg-white/70 p-4">
+          <section
+            className="rounded-2xl border border-surface-variant/20 bg-white/70 p-4"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
             <div className="mb-4">
               <p className="text-sm font-semibold text-on-surface">Image</p>
-              <p className="text-xs text-on-surface-variant">Add a visual reference for this letter.</p>
+              <p className="text-xs text-on-surface-variant">Add a visual reference for this card.</p>
             </div>
 
             <div
@@ -208,19 +307,14 @@ function PhonicsLetterCard({
               }`}
             >
               {imageState.previewUrl ? (
-                <>
-                  <Image src={imageState.previewUrl} alt={`${card.label} upload preview`} fill unoptimized sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 25vw" className="object-cover" />
-                  <div className="absolute inset-x-4 bottom-4 rounded-full bg-white/90 px-4 py-2 text-center text-xs font-bold text-primary shadow-sm backdrop-blur-sm">
-                    {imageState.fileName}
-                  </div>
-                </>
+                <Image src={imageState.previewUrl} alt={`${card.label} upload preview`} fill unoptimized sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 25vw" className="object-cover" />
               ) : (
                 <>
                   <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary text-on-primary">
                     <MaterialSymbol name="add_a_photo" className="size-8" />
                   </div>
                   <p className="mt-4 text-lg font-bold text-on-surface">{imageButtonLabel}</p>
-                  <p className="mt-1 max-w-[14rem] text-sm text-on-surface-variant">Use a clear child-friendly image for the letter.</p>
+                  <p className="mt-1 max-w-[14rem] text-sm text-on-surface-variant">Use a clear child-friendly image for the card.</p>
                 </>
               )}
             </div>
@@ -236,12 +330,15 @@ function PhonicsLetterCard({
                 }`}
               >
                 <p className="font-semibold">{imageState.status.message}</p>
-                {imageState.filePath ? <p className="mt-1 break-all opacity-80">{imageState.filePath}</p> : null}
               </div>
             ) : null}
           </section>
 
-          <section className="rounded-2xl border border-surface-variant/20 bg-white/70 p-4">
+          <section
+            className="rounded-2xl border border-surface-variant/20 bg-white/70 p-4"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
             <div className="mb-4">
               <p className="text-sm font-semibold text-on-surface">Audio</p>
               <p className="text-xs text-on-surface-variant">Upload the MP3 pronunciation clip.</p>
@@ -258,18 +355,18 @@ function PhonicsLetterCard({
                 }
               }}
               className={`flex aspect-[16/9] items-center justify-center rounded-2xl ${
-                audioUpload
+                audioState.previewUrl
                   ? "cursor-pointer bg-primary-container/10 p-4"
                   : "cursor-pointer border border-dashed border-primary/25 bg-primary-container/10 px-5 py-6 text-center"
               }`}
             >
-              {audioUpload ? (
+              {audioState.previewUrl ? (
                 <div className="flex w-full flex-col justify-center gap-3" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
                   <div className="inline-flex max-w-full items-center gap-2 self-start rounded-full bg-white px-3 py-2 text-xs font-bold text-primary shadow-sm">
                     <MaterialSymbol name="record_voice_over" className="size-4" />
-                    <span className="min-w-0 truncate">{audioUpload.fileName}</span>
+                    <span className="min-w-0 truncate">{audioState.fileName}</span>
                   </div>
-                  <audio controls preload="metadata" className="w-full" src={audioUpload.previewUrl}>
+                  <audio controls preload="metadata" className="w-full" src={audioState.previewUrl ?? undefined}>
                     Your browser does not support audio playback.
                   </audio>
                 </div>
@@ -283,13 +380,27 @@ function PhonicsLetterCard({
                 </div>
               )}
             </div>
+
+            {audioState.status.message ? (
+              <div
+                className={`mt-3 rounded-2xl px-3 py-2 text-xs ${
+                  audioState.status.state === "success"
+                    ? "bg-emerald-50 text-emerald-700"
+                    : audioState.status.state === "error"
+                      ? "bg-error/10 text-error"
+                      : "bg-primary-container/20 text-primary"
+                }`}
+              >
+                <p className="font-semibold">{audioState.status.message}</p>
+              </div>
+            ) : null}
           </section>
         </div>
 
         <div className="mt-4 flex items-center justify-between gap-3 text-xs text-on-surface-variant">
           <span>Image + audio required</span>
-          <span className={`shrink-0 rounded-full px-3 py-1 font-semibold ${imageState.previewUrl && audioUpload ? "bg-primary-container/30 text-primary" : "bg-surface text-on-surface-variant"}`}>
-            {imageState.previewUrl && audioUpload ? "Ready" : "Incomplete"}
+          <span className={`shrink-0 rounded-full px-3 py-1 font-semibold ${imageState.previewUrl && audioState.previewUrl ? "bg-primary-container/30 text-primary" : "bg-surface text-on-surface-variant"}`}>
+            {imageState.previewUrl && audioState.previewUrl ? "Ready" : "Incomplete"}
           </span>
         </div>
       </div>
@@ -304,7 +415,10 @@ export function PhonicsUploadGrid({
   onUploadAllComplete,
 }: PhonicsUploadGridProps) {
   const [imageStates, setImageStates] = useState<Record<string, CardImageState>>(
-    () => Object.fromEntries(cards.map((card) => [card.letter, createEmptyImageState()])),
+    () => Object.fromEntries(cards.map((card) => [card.id, createEmptyImageState()])),
+  );
+  const [audioStates, setAudioStates] = useState<Record<string, CardAudioState>>(
+    () => Object.fromEntries(cards.map((card) => [card.id, createEmptyAudioState()])),
   );
   const lastUploadTokenRef = useRef(uploadAllToken);
 
@@ -313,12 +427,17 @@ export function PhonicsUploadGrid({
       for (const imageState of Object.values(imageStates)) {
         if (imageState.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(imageState.previewUrl);
       }
+      for (const audioState of Object.values(audioStates)) {
+        if (audioState.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(audioState.previewUrl);
+      }
     };
-  }, [imageStates]);
+  }, [audioStates, imageStates]);
 
   const pendingImageCount = useMemo(
-    () => Object.values(imageStates).filter((imageState) => imageState.file && imageState.status.state !== "success").length,
-    [imageStates],
+    () =>
+      Object.values(imageStates).filter((imageState) => imageState.file && imageState.status.state !== "success").length +
+      Object.values(audioStates).filter((audioState) => audioState.file && audioState.status.state !== "success").length,
+    [audioStates, imageStates],
   );
 
   useEffect(() => {
@@ -328,33 +447,66 @@ export function PhonicsUploadGrid({
   useEffect(() => {
     let isCancelled = false;
 
-    async function loadExistingImages() {
+    async function loadExistingAssets() {
       try {
-        const storageBasePath = await getAuthenticatedStorageBasePath();
+        const itemKeys = cards.map((card) => sanitizeSegment(card.id));
+        const [imageMetadataMap, audioMetadataMap] = await Promise.all([
+          fetchImageAssetMetadataMap("phonics", itemKeys, {
+            preferThumbnail: false,
+          }),
+          fetchAudioAssetMetadataMap("phonics-audio", itemKeys),
+        ]);
+
         await Promise.all(
           cards.map(async (card) => {
-            const folderPath = `${storageBasePath}/${sanitizeSegment(card.letter)}`;
-            const existingFilePath = await findExistingImagePath(folderPath);
-            if (!existingFilePath) return;
+            const audioFolderPath = `${SUPABASE_AUDIO_FOLDER}/${sanitizeSegment(card.id)}`;
+            const imageFolderPath = `${SUPABASE_IMAGE_FOLDER}/${sanitizeSegment(card.id)}`;
+            const existingImagePath =
+              imageMetadataMap[sanitizeSegment(card.id)] ??
+              (await findExistingFilePath(imageFolderPath));
+            const existingAudioPath =
+              audioMetadataMap[sanitizeSegment(card.id)] ??
+              (await findExistingFilePath(audioFolderPath));
 
-            const signedPreviewUrl = await createSignedPreviewUrl(existingFilePath);
-            if (isCancelled) return;
+            if (existingImagePath) {
+              const signedPreviewUrl = createPreviewUrl(existingImagePath);
+              if (!isCancelled) {
+                setImageStates((current) => {
+                  const currentState = current[card.id];
+                  if (!currentState || currentState.file) return current;
+                  return {
+                    ...current,
+                    [card.id]: {
+                      ...currentState,
+                      fileName: existingImagePath.split("/").pop() ?? "card-image",
+                      filePath: existingImagePath,
+                      previewUrl: signedPreviewUrl,
+                      status: { state: "success", message: "Current image loaded." },
+                    },
+                  };
+                });
+              }
+            }
 
-            setImageStates((current) => {
-              const currentState = current[card.letter];
-              if (!currentState || currentState.file) return current;
-
-              return {
-                ...current,
-                [card.letter]: {
-                  ...currentState,
-                  fileName: existingFilePath.split("/").pop() ?? "card-image",
-                  filePath: existingFilePath,
-                  previewUrl: signedPreviewUrl,
-                  status: { state: "success", message: "Existing image loaded from storage." },
-                },
-              };
-            });
+            if (existingAudioPath) {
+              const signedAudioUrl = createPreviewUrl(existingAudioPath);
+              if (!isCancelled) {
+                setAudioStates((current) => {
+                  const currentState = current[card.id];
+                  if (!currentState || currentState.file) return current;
+                  return {
+                    ...current,
+                    [card.id]: {
+                      ...currentState,
+                      fileName: existingAudioPath.split("/").pop() ?? "card-audio",
+                      filePath: existingAudioPath,
+                      previewUrl: signedAudioUrl,
+                      status: { state: "success", message: "Current audio loaded." },
+                    },
+                  };
+                });
+              }
+            }
           }),
         );
       } catch {
@@ -362,26 +514,36 @@ export function PhonicsUploadGrid({
       }
     }
 
-    void loadExistingImages();
+    void loadExistingAssets();
     return () => {
       isCancelled = true;
     };
   }, [cards]);
 
-  function setCardImageState(cardName: string, nextState: CardImageState) {
+  function setCardImageState(cardId: string, nextState: CardImageState) {
     setImageStates((current) => {
-      const previous = current[cardName];
+      const previous = current[cardId];
       if (previous?.previewUrl?.startsWith("blob:") && previous.previewUrl !== nextState.previewUrl) {
         URL.revokeObjectURL(previous.previewUrl);
       }
-      return { ...current, [cardName]: nextState };
+      return { ...current, [cardId]: nextState };
     });
   }
 
-  function handleImageSelected(cardName: string, file: File) {
+  function setCardAudioState(cardId: string, nextState: CardAudioState) {
+    setAudioStates((current) => {
+      const previous = current[cardId];
+      if (previous?.previewUrl?.startsWith("blob:") && previous.previewUrl !== nextState.previewUrl) {
+        URL.revokeObjectURL(previous.previewUrl);
+      }
+      return { ...current, [cardId]: nextState };
+    });
+  }
+
+  async function handleImageSelected(cardId: string, file: File) {
     const validationMessage = validateImageFile(file);
     if (validationMessage) {
-      setCardImageState(cardName, {
+      setCardImageState(cardId, {
         file: null,
         fileName: null,
         filePath: null,
@@ -391,7 +553,76 @@ export function PhonicsUploadGrid({
       return;
     }
 
-    setCardImageState(cardName, {
+    if (!shouldNormalizeImageUpload(cardId)) {
+      setCardImageState(cardId, {
+        file,
+        fileName: file.name,
+        filePath: null,
+        previewUrl: URL.createObjectURL(file),
+        status: { state: "staged", message: "Ready to upload. Click Upload All when finished." },
+      });
+      return;
+    }
+
+    setImageStates((current) => ({
+      ...current,
+      [cardId]: {
+        ...current[cardId],
+        status: { state: "loading", message: "Optimizing image..." },
+      },
+    }));
+
+    let normalizedFile: File;
+    try {
+      normalizedFile = await normalizeImageForCardUpload(file);
+    } catch (error) {
+      setCardImageState(cardId, {
+        file: null,
+        fileName: null,
+        filePath: null,
+        previewUrl: null,
+        status: {
+          state: "error",
+          message: error instanceof Error ? error.message : "Unable to process the selected image.",
+        },
+      });
+      return;
+    }
+
+    if (normalizedFile.size > MAX_IMAGE_FILE_SIZE) {
+      setCardImageState(cardId, {
+        file: null,
+        fileName: null,
+        filePath: null,
+        previewUrl: null,
+        status: { state: "error", message: "Processed image size must be 5MB or smaller." },
+      });
+      return;
+    }
+
+    setCardImageState(cardId, {
+      file: normalizedFile,
+      fileName: normalizedFile.name,
+      filePath: null,
+      previewUrl: URL.createObjectURL(normalizedFile),
+      status: { state: "staged", message: "Image optimized and ready to upload. Click Upload All when finished." },
+    });
+  }
+
+  function handleAudioSelected(cardId: string, file: File) {
+    const validationMessage = validateAudioFile(file);
+    if (validationMessage) {
+      setCardAudioState(cardId, {
+        file: null,
+        fileName: null,
+        filePath: null,
+        previewUrl: null,
+        status: { state: "error", message: validationMessage },
+      });
+      return;
+    }
+
+    setCardAudioState(cardId, {
       file,
       fileName: file.name,
       filePath: null,
@@ -401,65 +632,154 @@ export function PhonicsUploadGrid({
   }
 
   useEffect(() => {
-    async function uploadAllImages() {
-      const stagedEntries = Object.entries(imageStates).filter(
-        ([, imageState]) => imageState.file && imageState.status.state !== "success",
-      );
+    async function uploadAllAssets() {
+      const stagedEntries = cards.filter((card) => {
+        const imageState = imageStates[card.id];
+        const audioState = audioStates[card.id];
+        return (
+          !!(imageState?.file && imageState.status.state !== "success") ||
+          !!(audioState?.file && audioState.status.state !== "success")
+        );
+      });
 
       if (!stagedEntries.length) {
         onUploadAllComplete?.();
         return;
       }
 
-      const storageBasePath = await getAuthenticatedStorageBasePath();
+      for (const card of stagedEntries) {
+        const imageState = imageStates[card.id];
+        const audioState = audioStates[card.id];
 
-      for (const [cardName, imageState] of stagedEntries) {
-        const file = imageState.file;
-        if (!file) continue;
+        if (imageState?.file && imageState.status.state !== "success") {
+          const folderPath = `${SUPABASE_IMAGE_FOLDER}/${sanitizeSegment(card.id)}`;
+          const filePath = buildImageFilePath(SUPABASE_IMAGE_FOLDER, card.id, imageState.file.name);
 
-        const folderPath = `${storageBasePath}/${sanitizeSegment(cardName)}`;
-        const filePath = buildImageFilePath(storageBasePath, cardName, file.name);
-
-        setImageStates((current) => ({
-          ...current,
-          [cardName]: {
-            ...current[cardName],
-            filePath,
-            status: { state: "loading", message: "Uploading image..." },
-          },
-        }));
-
-        try {
-          await removeImageFromSupabase(folderPath);
-          await uploadImageToSupabase(file, filePath);
-          const signedPreviewUrl = await createSignedPreviewUrl(filePath);
-
-          setImageStates((current) => {
-            const previous = current[cardName];
-            if (previous.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previous.previewUrl);
-
-            return {
-              ...current,
-              [cardName]: {
-                ...previous,
-                filePath,
-                previewUrl: signedPreviewUrl,
-                status: { state: "success", message: "Uploaded successfully." },
-              },
-            };
-          });
-        } catch (error) {
           setImageStates((current) => ({
             ...current,
-            [cardName]: {
-              ...current[cardName],
+            [card.id]: {
+              ...current[card.id],
               filePath,
-              status: {
-                state: "error",
-                message: error instanceof Error ? error.message : "Unable to upload image right now.",
-              },
+              status: { state: "loading", message: "Uploading image..." },
             },
           }));
+
+          try {
+            await removeFolderFilesFromSupabase(folderPath);
+            await uploadFileToSupabase(imageState.file, filePath, "image/png");
+            let thumbnailPath: string | null = null;
+
+            if (shouldGenerateThumbnail(card.id)) {
+              try {
+                const thumbnailFile = await createThumbnailImageForUpload(imageState.file);
+                thumbnailPath = buildThumbnailFilePath(filePath);
+                await uploadFileToSupabase(thumbnailFile, thumbnailPath, "image/webp");
+              } catch {
+                thumbnailPath = null;
+              }
+            }
+
+            const metadataResult = await upsertImageAssetMetadata({
+              section: "phonics",
+              itemKey: sanitizeSegment(card.id),
+              imagePath: filePath,
+              thumbnailPath,
+            });
+            const signedPreviewUrl = createPreviewUrl(filePath);
+
+            setImageStates((current) => {
+              const previous = current[card.id];
+              if (previous.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previous.previewUrl);
+
+              return {
+                ...current,
+                [card.id]: {
+                  ...previous,
+                  file: null,
+                  fileName: imageState.file?.name ?? previous.fileName,
+                  filePath,
+                  previewUrl: signedPreviewUrl,
+                  status: {
+                    state: "success",
+                    message: metadataResult.ok
+                      ? "Uploaded successfully."
+                      : "Image uploaded successfully. Metadata sync failed.",
+                  },
+                },
+              };
+            });
+          } catch (error) {
+            setImageStates((current) => ({
+              ...current,
+              [card.id]: {
+                ...current[card.id],
+                filePath,
+                status: {
+                  state: "error",
+                  message: error instanceof Error ? error.message : "Unable to upload image right now.",
+                },
+              },
+            }));
+          }
+        }
+
+        if (audioState?.file && audioState.status.state !== "success") {
+          const folderPath = `${SUPABASE_AUDIO_FOLDER}/${sanitizeSegment(card.id)}`;
+          const filePath = buildAudioFilePath(SUPABASE_AUDIO_FOLDER, card.id, audioState.file.name);
+
+          setAudioStates((current) => ({
+            ...current,
+            [card.id]: {
+              ...current[card.id],
+              filePath,
+              status: { state: "loading", message: "Uploading audio..." },
+            },
+          }));
+
+          try {
+            await removeFolderFilesFromSupabase(folderPath);
+            await uploadFileToSupabase(audioState.file, filePath, "audio/mpeg");
+            const metadataResult = await upsertAudioAssetMetadata({
+              section: "phonics-audio",
+              itemKey: sanitizeSegment(card.id),
+              audioPath: filePath,
+            });
+            const signedAudioUrl = createPreviewUrl(filePath);
+
+            setAudioStates((current) => {
+              const previous = current[card.id];
+              if (previous.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previous.previewUrl);
+
+              return {
+                ...current,
+                [card.id]: {
+                  ...previous,
+                  file: null,
+                  fileName: audioState.file?.name ?? previous.fileName,
+                  filePath,
+                  previewUrl: signedAudioUrl,
+                  status: {
+                    state: "success",
+                    message: metadataResult.ok
+                      ? "Audio uploaded successfully."
+                      : "Audio uploaded successfully. Metadata sync failed.",
+                  },
+                },
+              };
+            });
+          } catch (error) {
+            setAudioStates((current) => ({
+              ...current,
+              [card.id]: {
+                ...current[card.id],
+                filePath,
+                status: {
+                  state: "error",
+                  message: error instanceof Error ? error.message : "Unable to upload audio right now.",
+                },
+              },
+            }));
+          }
         }
       }
 
@@ -468,17 +788,19 @@ export function PhonicsUploadGrid({
 
     if (uploadAllToken === 0 || uploadAllToken === lastUploadTokenRef.current) return;
     lastUploadTokenRef.current = uploadAllToken;
-    void uploadAllImages();
-  }, [imageStates, onUploadAllComplete, uploadAllToken]);
+    void uploadAllAssets();
+  }, [audioStates, cards, imageStates, onUploadAllComplete, uploadAllToken]);
 
   return (
     <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
       {cards.map((card) => (
         <PhonicsLetterCard
-          key={card.letter}
+          key={card.id}
           card={card}
-          imageState={imageStates[card.letter] ?? createEmptyImageState()}
+          imageState={imageStates[card.id] ?? createEmptyImageState()}
+          audioState={audioStates[card.id] ?? createEmptyAudioState()}
           onImageSelected={handleImageSelected}
+          onAudioSelected={handleAudioSelected}
         />
       ))}
     </div>
